@@ -17,5 +17,8 @@ try() {
 
 try 0 0
 try 100 100
+try 3 1+2
+try 4 5-1
+try 10 100-52-83+45
 
 echo OK
