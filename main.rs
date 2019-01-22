@@ -30,7 +30,8 @@ fn main() {
             let n = read_num(&input, &mut idx);
             file.write_all(format!("\tsub rax, {}\n", n).as_bytes()).unwrap();
         } else {
-            println!("expected op but got {} (at {})", input[idx], idx);
+            println!("expected op (+ or -) but got '{}' (at position {})", input[idx].escape_debug(), idx + 1);
+            return;
         }
     }
     file.write_all(b"\tret\n").unwrap();
