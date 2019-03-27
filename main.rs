@@ -17,18 +17,23 @@ enum Token {
     Mod,
     ParL,
     ParR,
+    Assign,
+    Semicolon,
     Num(usize),
+    Id(String),
     Eof
 }
 
 #[derive(PartialEq, Eq, Debug)]
 enum Astty {
     Num(usize),
+    Id(String),
     Add,
     Sub,
     Mul,
     Div,
     Mod,
+    Assign,
     Eof
 }
 
@@ -52,6 +57,8 @@ impl Ast {
     }
 }
 
+type Code = Vec<Box<Ast>>;
+
 use std::fs::File;
 use std::io::Write;
 
@@ -59,20 +66,18 @@ fn main() {
     let input = read_string();
     let ofile_name = "tmp.s";
     let toks = tokenize(&input);
-    let ast = Box::new(parse(&toks));
-
-    println!("{:?}", ast);
+    let code = parse(&toks);
 
     let mut file = File::create(ofile_name).unwrap();
     file.write_all(b".intel_syntax noprefix\n").unwrap();
     file.write_all(b".global _main\n\n").unwrap();
     file.write_all(b"_main:\n").unwrap();
-    gen(&ast, &mut file);
+    gen_code(&code, &mut file);
     file.write_all(b"\tpop rax\n").unwrap();
     file.write_all(b"\tret\n").unwrap();
 }
 
-fn tokenize(buf: &Vec<char>) -> Vec<Token> {
+fn tokenize(buf: &[char]) -> Vec<Token> {
     let mut idx = 0;
     let mut toks = Vec::new();
     skip_whitespace(buf, &mut idx);
@@ -85,7 +90,10 @@ fn tokenize(buf: &Vec<char>) -> Vec<Token> {
             '%' => { toks.push(Token::Mod); idx += 1; },
             '(' => { toks.push(Token::ParL); idx += 1; },
             ')' => { toks.push(Token::ParR); idx += 1; },
+            '=' => { toks.push(Token::Assign); idx += 1; },
+            ';' => { toks.push(Token::Semicolon); idx += 1; },
             '0'..='9' => toks.push(Token::Num(read_num(buf, &mut idx))),
+            'a'..='z' | 'A'..='Z' | '_' => toks.push(Token::Id(read_id(buf, &mut idx))),
             _ => { panic!("unknown character '{}'", buf[idx].escape_debug()); }
         }
         skip_whitespace(buf, &mut idx);
@@ -94,13 +102,13 @@ fn tokenize(buf: &Vec<char>) -> Vec<Token> {
     toks
 }
 
-fn skip_whitespace(buf: &Vec<char>, idx: &mut usize) {
+fn skip_whitespace(buf: &[char], idx: &mut usize) {
     while *idx < buf.len() && buf[*idx].is_whitespace() {
         *idx += 1;
     }
 }
 
-fn read_num(buf: &Vec<char>, idx: &mut usize) -> usize {
+fn read_num(buf: &[char], idx: &mut usize) -> usize {
     let mut ret = 0;
     while let Some(n) = buf[*idx].to_digit(10) {
         ret = ret * 10 + n as usize;
@@ -109,16 +117,35 @@ fn read_num(buf: &Vec<char>, idx: &mut usize) -> usize {
     ret
 }
 
-fn parse(toks: &Vec<Token>) -> Ast {
-    let mut idx = 0;
-    let ast = add(&toks, &mut idx);
-    if toks.len() - 1 > idx {
-        panic!("got unexpected token {:?} at {}", toks[idx], idx);
+fn read_id(buf: &[char], idx: &mut usize) -> String {
+    let s = *idx;
+    while buf[*idx].is_ascii_alphanumeric() || buf[*idx] == '_' {
+        *idx += 1;
     }
-    ast
+    buf[s..*idx].iter().collect()
 }
 
-fn add(toks: &Vec<Token>, idx: &mut usize) -> Ast {
+fn parse(toks: &[Token]) -> Code {
+    let mut idx = 0;
+    let mut code = Vec::new();
+    while idx < toks.len() - 1 {
+        code.push(Box::new(assign(&toks, &mut idx)));
+    }
+    code
+}
+
+fn assign(toks: &[Token], idx: &mut usize) -> Ast {
+    let mut node = add(toks, idx);
+    loop {
+        match toks[*idx] {
+            Token::Assign => { *idx += 1; node = Ast::new2(Astty::Assign, node, assign(toks, idx)); },
+            Token::Semicolon => { *idx += 1; return node; },
+            ref t => { panic!("';' did not found. Found {:?}", t); }
+        }
+    }
+}
+
+fn add(toks: &[Token], idx: &mut usize) -> Ast {
     if toks.len() == *idx {
         return Ast::new0(Astty::Eof);
     }
@@ -132,7 +159,7 @@ fn add(toks: &Vec<Token>, idx: &mut usize) -> Ast {
     }
 }
 
-fn mul(toks: &Vec<Token>, idx: &mut usize) -> Ast {
+fn mul(toks: &[Token], idx: &mut usize) -> Ast {
     if toks.len() == *idx {
         return Ast::new0(Astty::Eof);
     }
@@ -147,7 +174,7 @@ fn mul(toks: &Vec<Token>, idx: &mut usize) -> Ast {
     }
 }
 
-fn term(toks: &Vec<Token>, idx: &mut usize) -> Ast {
+fn term(toks: &[Token], idx: &mut usize) -> Ast {
     if toks.len() == *idx {
         return Ast::new0(Astty::Eof);
     }
@@ -166,8 +193,13 @@ fn term(toks: &Vec<Token>, idx: &mut usize) -> Ast {
             *idx += 1;
             Ast::new0(Astty::Num(n))
         },
-        _ => { panic!("expected '(' or Num but got {:?}", toks[*idx]); }
+        _ => { return Ast::new0(Astty::Eof); }
     }
+}
+
+fn gen_code(code: &Code, file: &mut File) {
+    let ast = code.last().unwrap();
+    gen(ast, file);
 }
 
 fn gen(ast: &Box<Ast>, file: &mut File) {
@@ -182,6 +214,9 @@ fn gen(ast: &Box<Ast>, file: &mut File) {
         Astty::Num(n) => {
             file.write_all(format!("\tpush {}\n", n).as_bytes()).unwrap();
             return;
+        },
+        Astty::Id(ref arg) => {
+            panic!("unimplemented");
         },
         Astty::Add => {
             file.write_all(b"\tadd rax, rdi\n").unwrap();
@@ -198,6 +233,10 @@ fn gen(ast: &Box<Ast>, file: &mut File) {
         },
         Astty::Mod => {
             panic!("unimplemented");
+        },
+        Astty::Assign => {
+            return;
+            // panic!("unimplemented")
         },
         Astty::Eof => {
             return;
